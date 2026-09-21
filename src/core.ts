@@ -122,8 +122,59 @@ export function resolveQuestionText(exec: unknown): string | undefined {
 }
 
 /**
+ * True when the text already contains CJK characters (i.e. it is already a
+ * Chinese explanation). Shared with dsh-approval-gate's `src/zh.mjs` semantics
+ * so the toast never double-wraps a reason the host already localized.
+ */
+export function hasCJK(text: unknown): boolean {
+  return /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/.test(text == null ? '' : String(text))
+}
+
+/** Short consequence phrase per sandbox mode, sized for a toast body. */
+const MODE_EFFECT: Record<string, string> = {
+  'read-only': '只读，不会改文件',
+  'workspace-write': '可改工作区内文件',
+  'danger-full-access': '可写工作区外任意路径，不可自动回滚',
+}
+
+/** The host's escalation template: `escalate sandbox to <mode>: <justification>`. */
+const ESCALATE_RE = /escalate\s+sandbox\s+to\s+([^\s:]+):?\s*([\s\S]*)/i
+
+/**
+ * Chinese, approver-facing form of an approval request's reason.
+ *
+ * The model's `justification` is often English (subagents and other providers
+ * especially) and the host template adds an English prefix, so a toast built
+ * from the raw reason is unreadable for a Chinese approver. This rebuilds it
+ * from the one structured fact in the payload — the target sandbox mode — and
+ * appends the model's original text as a note. Reasons that already contain
+ * Chinese are never rewritten (only an English template prefix is localized).
+ *
+ * @param reason - the raw approval `reason` (or `description`).
+ * @returns the Chinese explanation, or undefined when the reason is empty.
+ */
+export function describeApprovalReason(reason: unknown): string | undefined {
+  const raw = typeof reason === 'string' ? reason.trim() : ''
+  if (raw.length === 0) return undefined
+  const matched = ESCALATE_RE.exec(raw)
+  if (matched) {
+    const mode = matched[1]
+    const detail = (matched[2] || '').trim()
+    // Already-Chinese detail (e.g. dsh-approval-gate rewrote the reason): only
+    // localize the host prefix, never rewrite the wording.
+    if (hasCJK(detail)) return '沙箱提权到 ' + mode + '：' + truncate(detail, 80)
+    const effect = MODE_EFFECT[mode] || '未识别的沙箱模式'
+    const note = detail.length > 0 ? '；模型原文：' + truncate(detail, 80) : ''
+    return '沙箱提权到 ' + mode + '（' + effect + '）' + note
+  }
+  if (hasCJK(raw)) return '原因：' + truncate(raw, 80)
+  return '需要人工审批；模型原文：' + truncate(raw, 80)
+}
+
+/**
  * One-line label for a pending approval request: tool name + reason. Either
  * may be absent; returns undefined only when nothing usable is present.
+ * The reason half is always Chinese-led (see {@link describeApprovalReason}).
  */
 export function resolveApprovalText(req: unknown): string | undefined {
   try {
@@ -136,7 +187,8 @@ export function resolveApprovalText(req: unknown): string | undefined {
     const toolName = r.toolName || (toolObj && typeof toolObj === 'object' && toolObj.name) || (typeof toolObj === 'string' ? toolObj : undefined)
     const parts: string[] = []
     if (typeof toolName === 'string' && toolName.length > 0) parts.push('操作：' + truncate(toolName, 40))
-    if (typeof reason === 'string' && reason.length > 0) parts.push('原因：' + truncate(reason, 80))
+    const described = describeApprovalReason(reason)
+    if (described !== undefined) parts.push(described)
     return parts.length > 0 ? parts.join('；') : undefined
   } catch {
     return undefined

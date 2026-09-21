@@ -2,6 +2,36 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **Approval toasts are Chinese-led.** `resolveApprovalText()` used to paste the
+  raw approval `reason`, which is the host's English template
+  `escalate sandbox to <mode>: <justification>` — the toasts were unreadable for
+  a Chinese approver. The new pure helper `describeApprovalReason()` parses that
+  template and rebuilds the text from its one structured fact (the target sandbox
+  mode) plus the consequence, appending the model's original text as a note:
+  `沙箱提权到 danger-full-access（可写工作区外任意路径，不可自动回滚）；模型原文：…`.
+  Commands, paths and tool names stay verbatim.
+- **Idempotent with `dsh-approval-gate`.** Both plugins sit on the
+  `approval/request` waterfall and either may rewrite the human-facing text
+  first. A reason that already contains Chinese is passed through with only the
+  English template prefix localized, so the toast never double-wraps or contradicts
+  the approval card.
+- Non-escalation requests whose reason is English now read
+  `需要人工审批；模型原文：…` instead of a bare `原因：<English>`.
+
+### Tests
+
+- `test/core.test.ts`: new `describeApprovalReason` suite (all sandbox modes,
+  unknown mode never claiming a consequence, Chinese pass-through + truncation,
+  English note, approval-gate already-localized input) and escalation coverage in
+  `resolveApprovalText`.
+- `test/smoke.mjs`: the built-artifact contract now drives a root-agent
+  `approval/request` with an English escalation reason and asserts the toast body
+  is Chinese and contains no `escalate sandbox to` prefix.
+
 ## [0.1.0] - 2026-08-25
 
 ### Added

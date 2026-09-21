@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   FINISH_COOLDOWN_MS,
+  describeApprovalReason,
   isRootAgent,
   isSupportedPlatform,
   resolveApprovalText,
@@ -132,13 +133,62 @@ describe('resolveApprovalText', () => {
 
   it('tolerates partial information', () => {
     expect(resolveApprovalText({ toolName: 'write' })).toBe('操作：write')
-    expect(resolveApprovalText({ reason: 'x' })).toBe('原因：x')
+    expect(resolveApprovalText({ reason: 'x' })).toBe('需要人工审批；模型原文：x')
   })
 
   it('returns undefined when nothing usable is present', () => {
     expect(resolveApprovalText({})).toBeUndefined()
     expect(resolveApprovalText(null)).toBeUndefined()
     expect(resolveApprovalText(undefined)).toBeUndefined()
+  })
+
+  it('localizes the host escalation template into Chinese', () => {
+    const text = resolveApprovalText({
+      toolName: 'pwsh',
+      reason: 'escalate sandbox to danger-full-access: Same sandbox denial as before.',
+    })
+    expect(text).toBe('操作：pwsh；沙箱提权到 danger-full-access（可写工作区外任意路径，不可自动回滚）；模型原文：Same sandbox denial as before.')
+    expect(text).not.toContain('escalate sandbox to')
+  })
+
+  it('keeps an already-Chinese escalation reason and only drops the English prefix', () => {
+    expect(resolveApprovalText({ toolName: 'write', reason: 'escalate sandbox to workspace-write: 写入工作区报告文件。' }))
+      .toBe('操作：write；沙箱提权到 workspace-write：写入工作区报告文件。')
+  })
+})
+
+describe('describeApprovalReason', () => {
+  it('renders every known sandbox mode with its consequence', () => {
+    expect(describeApprovalReason('escalate sandbox to read-only: x')).toBe('沙箱提权到 read-only（只读，不会改文件）；模型原文：x')
+    expect(describeApprovalReason('escalate sandbox to workspace-write: x')).toBe('沙箱提权到 workspace-write（可改工作区内文件）；模型原文：x')
+    expect(describeApprovalReason('escalate sandbox to danger-full-access: x')).toBe('沙箱提权到 danger-full-access（可写工作区外任意路径，不可自动回滚）；模型原文：x')
+  })
+
+  it('never claims a consequence for an unknown mode', () => {
+    expect(describeApprovalReason('escalate sandbox to weird-mode: x')).toBe('沙箱提权到 weird-mode（未识别的沙箱模式）；模型原文：x')
+  })
+
+  it('passes Chinese reasons through and truncates them', () => {
+    expect(describeApprovalReason('编辑 Merge.yaml')).toBe('原因：编辑 Merge.yaml')
+    expect(describeApprovalReason('中文'.repeat(60))).toBe('原因：' + '中文'.repeat(40) + '…')
+  })
+
+  it('appends the English original instead of dropping it', () => {
+    expect(describeApprovalReason('Needs a human check.')).toBe('需要人工审批；模型原文：Needs a human check.')
+  })
+
+  it('accepts an approval-gate already-localized reason without double-wrapping', () => {
+    const localized = '沙箱提权到 danger-full-access：可读写工作区之外的任意路径（含系统位置），改动不再受沙箱限制，也无法自动回滚。\n模型说明原文（未翻译）：Same denial.'
+    const out = describeApprovalReason(localized)
+    expect(out && out.startsWith('原因：沙箱提权到 danger-full-access：')).toBe(true)
+    expect(out && out.includes('模型说明原文')).toBe(true)
+  })
+
+  it('returns undefined for empty or non-string reasons', () => {
+    expect(describeApprovalReason(undefined)).toBeUndefined()
+    expect(describeApprovalReason('')).toBeUndefined()
+    expect(describeApprovalReason('   ')).toBeUndefined()
+    expect(describeApprovalReason(42)).toBeUndefined()
   })
 })
 

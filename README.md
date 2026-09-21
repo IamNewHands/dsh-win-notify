@@ -14,7 +14,8 @@
 
 - 🔔 **任务完成**：用户可见根代理 running → idle 时弹出，正文优先带真实会话标题（`已完成：「<会话标题>」`）
 - ✋ **需要您的输入**：`ask_user_question` 提问真正呈现给您的瞬间弹出（不是回答之后），含问题摘要与数量
-- 🛡️ **需要您的审批**：Agent 请求操作审批时弹出，含工具名与原因
+- 🛡️ **需要您的审批**：Agent 请求操作审批时弹出，含工具名与中文说明（见下）
+- 🈶 **审批说明中文化**：审批 toast 的说明一律中文——沙箱提权请求会解析出目标模式并写出后果（`沙箱提权到 danger-full-access（可写工作区外任意路径，不可自动回滚）`），模型原文作为附注追加；原文已是中文时只去掉宿主英文前缀 `escalate sandbox to <mode>:`，不改写措辞。命令、路径、工具名一律原样保留
 - 🐋 **品牌化**：来源名称 DeepSeek Harness + 黑底白鲸鱼图标（多帧 16–256px `notify.ico`，标题行小图标正确显示）
 - 🧠 **噪音控制**：子代理 / AgentTeams 成员 / workflow worker 的完成、提问、审批一律不打扰；同一代理两次“任务完成”至少间隔 10 秒
 - 📋 **通知中心持久**：toast 进入系统通知中心，不随横幅消失
@@ -95,7 +96,8 @@ npm run check
 - 事件挂接（均为 DSH 宿主既有事件）：
   - `agent/status`：running → idle 视为任务完成（仅用户可见根代理；见下「噪音控制」）
   - `tools/execute`：`ask_user_question` 弹提问的当刻发「需要您的输入」（挂 `tools/result` 会迟到——那是用户回答之后）
-  - `approval/request`：待审批时发「需要您的审批」
+  - `approval/request`：待审批时发「需要您的审批」；说明由 `describeApprovalReason()`（`src/core.ts`）生成中文：识别宿主模板 `escalate sandbox to <mode>: <justification>` → 写出目标模式与后果 + 模型原文附注；已是中文的原因只本地化前缀
+- 与 `dsh-approval-gate` 的关系：两者都可能在 `approval/request` 瀑布里改写给人看的说明。本插件只读 `req.reason`，因此无论谁先执行都安全——approval-gate 已改写成中文时，本插件不再二次包装（CJK 检测）
 - 噪音控制：`origin === 'subagent'`（含 `delegationDepth > 0`）的会话一律跳过；逐代理 `WeakMap` 状态机；10 秒完成冷却
 - toast 图标链路：AUMID（`DeepSeekHarness.Notify`）→ 开始菜单快捷方式（`IPersistFile.Save` 必须在 `IPropertyStore.Commit` **之后**再执行一次才会把 AUMID 落盘）→ 注册表 `IconUri` → 多帧 `notify.ico`
 - `DshToast.exe` 由 `DshToast.cs` 预编译并随包分发；运行期缺失时自动用 `csc.exe` 现场重建（fire-and-forget，本轮通知跳过，下一轮生效）

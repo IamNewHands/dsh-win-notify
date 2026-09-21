@@ -63,6 +63,26 @@ const assert = (cond, msg) => {
     assert(!!toast, 'root-agent running→idle spawns the helper EXE')
     assert(toast && toast.argv[1] === '任务完成', 'toast title is 任务完成')
     assert(toast && typeof toast.argv[2] === 'string' && toast.argv[2].length > 0, 'toast body is non-empty')
+
+    // Approval toasts must read in Chinese: the host template is English
+    // (`escalate sandbox to <mode>: <justification>`), so the body is rebuilt
+    // from the target mode + consequence with the model text as a note.
+    const approvalCb = listeners.find(([e]) => e === 'approval/request')?.[1]
+    let released = 0
+    const before = spawns.length
+    approvalCb(
+      { tool: { name: 'pwsh' }, reason: 'escalate sandbox to danger-full-access: Same sandbox denial as before.', agent: { session: { header: {} } } },
+      () => { released += 1 },
+    )
+    assert(released === 1, 'approval/request releases the waterfall to the next listener')
+    const approvalToast = spawns.slice(before).find((s) => s.argv[0].toLowerCase().endsWith('dshtoast.exe'))
+    assert(!!approvalToast, 'approval/request spawns the helper EXE')
+    assert(approvalToast && approvalToast.argv[1] === '需要您的审批', 'approval toast title is 需要您的审批')
+    const body = approvalToast ? String(approvalToast.argv[2]) : ''
+    assert(body.includes('沙箱提权到 danger-full-access'), 'approval body states the escalation in Chinese')
+    assert(body.includes('可写工作区外任意路径'), 'approval body states the consequence')
+    assert(!body.includes('escalate sandbox to'), 'the English host prefix is not shown to the approver')
+    assert(body.includes('模型原文：'), 'the model original is kept as a note')
   } else {
     assert(listeners.length === 0, 'non-Windows host: apply() registers nothing (platform guard)')
   }
