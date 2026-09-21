@@ -140,6 +140,15 @@ const MODE_EFFECT: Record<string, string> = {
 /** The host's escalation template: `escalate sandbox to <mode>: <justification>`. */
 const ESCALATE_RE = /escalate\s+sandbox\s+to\s+([^\s:]+):?\s*([\s\S]*)/i
 
+/** Chinese lead another host plugin (dsh-approval-gate) puts in front of its rewrite. */
+const ZH_ESCALATION_LEAD = /^沙箱提权到/u
+
+/** Toast budget for the Chinese explanation: enough to keep the consequence sentence. */
+const REASON_MAX = 120
+
+/** Toast budget for the appended original text. */
+const NOTE_MAX = 80
+
 /**
  * Chinese, approver-facing form of an approval request's reason.
  *
@@ -148,7 +157,9 @@ const ESCALATE_RE = /escalate\s+sandbox\s+to\s+([^\s:]+):?\s*([\s\S]*)/i
  * from the raw reason is unreadable for a Chinese approver. This rebuilds it
  * from the one structured fact in the payload — the target sandbox mode — and
  * appends the model's original text as a note. Reasons that already contain
- * Chinese are never rewritten (only an English template prefix is localized).
+ * Chinese are never rewritten: an English template prefix is localized, and a
+ * reason another plugin already led with 「沙箱提权到 …」 keeps its own wording
+ * instead of getting a redundant 「原因：」 label prepended.
  *
  * @param reason - the raw approval `reason` (or `description`).
  * @returns the Chinese explanation, or undefined when the reason is empty.
@@ -162,13 +173,15 @@ export function describeApprovalReason(reason: unknown): string | undefined {
     const detail = (matched[2] || '').trim()
     // Already-Chinese detail (e.g. dsh-approval-gate rewrote the reason): only
     // localize the host prefix, never rewrite the wording.
-    if (hasCJK(detail)) return '沙箱提权到 ' + mode + '：' + truncate(detail, 80)
+    if (hasCJK(detail)) return '沙箱提权到 ' + mode + '：' + truncate(detail, REASON_MAX)
     const effect = MODE_EFFECT[mode] || '未识别的沙箱模式'
-    const note = detail.length > 0 ? '；模型原文：' + truncate(detail, 80) : ''
+    const note = detail.length > 0 ? '；模型原文：' + truncate(detail, NOTE_MAX) : ''
     return '沙箱提权到 ' + mode + '（' + effect + '）' + note
   }
-  if (hasCJK(raw)) return '原因：' + truncate(raw, 80)
-  return '需要人工审批；模型原文：' + truncate(raw, 80)
+  if (hasCJK(raw)) {
+    return ZH_ESCALATION_LEAD.test(raw) ? truncate(raw, REASON_MAX) : '原因：' + truncate(raw, REASON_MAX)
+  }
+  return '需要人工审批；模型原文：' + truncate(raw, NOTE_MAX)
 }
 
 /**

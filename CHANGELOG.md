@@ -22,6 +22,14 @@ All notable changes to this project are documented in this file.
 - Non-escalation requests whose reason is English now read
   `需要人工审批；模型原文：…` instead of a bare `原因：<English>`.
 
+### Fixed
+
+- A reason another plugin (`dsh-approval-gate`) had already localized to
+  「沙箱提权到 …」 no longer gets a redundant `原因：` label prepended — the first
+  live toast read `操作：write；原因：沙箱提权到 danger-full-access：…`.
+- The Chinese explanation budget went 80 → 120 code units so the consequence
+  sentence survives instead of being cut mid-word.
+
 ### Tests
 
 - `test/core.test.ts`: new `describeApprovalReason` suite (all sandbox modes,

@@ -170,7 +170,7 @@ describe('describeApprovalReason', () => {
 
   it('passes Chinese reasons through and truncates them', () => {
     expect(describeApprovalReason('编辑 Merge.yaml')).toBe('原因：编辑 Merge.yaml')
-    expect(describeApprovalReason('中文'.repeat(60))).toBe('原因：' + '中文'.repeat(40) + '…')
+    expect(describeApprovalReason('中文'.repeat(70))).toBe('原因：' + '中文'.repeat(60) + '…')
   })
 
   it('appends the English original instead of dropping it', () => {
@@ -180,8 +180,16 @@ describe('describeApprovalReason', () => {
   it('accepts an approval-gate already-localized reason without double-wrapping', () => {
     const localized = '沙箱提权到 danger-full-access：可读写工作区之外的任意路径（含系统位置），改动不再受沙箱限制，也无法自动回滚。\n模型说明原文（未翻译）：Same denial.'
     const out = describeApprovalReason(localized)
-    expect(out && out.startsWith('原因：沙箱提权到 danger-full-access：')).toBe(true)
-    expect(out && out.includes('模型说明原文')).toBe(true)
+    // No redundant 「原因：」 label in front of the plugin's own Chinese lead…
+    expect(out && out.startsWith('沙箱提权到 danger-full-access：')).toBe(true)
+    expect(out && out.startsWith('原因：')).toBe(false)
+    // …and the consequence sentence survives the toast budget intact.
+    expect(out && out.includes('可读写工作区之外的任意路径（含系统位置），改动不再受沙箱限制，也无法自动回滚。')).toBe(true)
+  })
+
+  it('localizes the prefix of an approval-gate reason that carries a Chinese detail', () => {
+    expect(describeApprovalReason('escalate sandbox to danger-full-access: 这是中文说明。'))
+      .toBe('沙箱提权到 danger-full-access：这是中文说明。')
   })
 
   it('returns undefined for empty or non-string reasons', () => {
