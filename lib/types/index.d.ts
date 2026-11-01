@@ -10,7 +10,8 @@
 /** Minimal host-context surface this plugin consumes (structural). */
 export interface NotifyContext {
   get<T = unknown>(name: string): T
-  on(event: string, listener: (...args: any[]) => unknown): unknown
+  /** `{ prepend: true }` unshifts to the front of a Cordis waterfall. */
+  on(event: string, listener: (...args: any[]) => unknown, options?: { prepend?: boolean }): unknown
   subprocess: {
     spawn(opts: { argv: string[]; cwd?: string; stdio?: unknown; graceMs?: number }): {
       done?: Promise<unknown>

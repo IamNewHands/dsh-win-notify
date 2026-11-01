@@ -61,8 +61,11 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   FINISH_COOLDOWN_MS,
+  PENDING_GRACE_MS,
+  isApprovalDecidedAfter,
   isRootAgent,
   isSupportedPlatform,
+  locateApprovalAsked,
   resolveApprovalText,
   resolveQuestionText,
   resolveSessionTitle,
@@ -197,11 +200,57 @@ export function apply(ctx: NotifyContext): void {
   })
 
   // Approval pending: compose the waterfall and forward; do not block it.
-  ctx.on('approval/request', (req: unknown, next: () => void) => {
+  //
+  // DSH 2.0.21+ composes ONE terminal answerer for `approval/request` — the
+  // desktop approval panel, reached through api-remotes — and it RETURNS an
+  // outcome, which ends the waterfall. This plugin is the last bundle, so a
+  // plain registration never runs and the approval toast silently disappeared.
+  // `{ prepend: true }` puts the listener in front of that answerer; it must
+  // still `return next()` so the real answerer keeps working.
+  //
+  // Registering first means the listener also sees requests an auto-approver
+  // answers in milliseconds, so the toast is deferred by PENDING_GRACE_MS and
+  // dropped when `approval/decided` shows the request was already answered.
+  const pendingTimers = new Set<ReturnType<typeof setTimeout>>()
+
+  function scheduleApprovalToast(req: unknown): void {
     const agent = req && typeof req === 'object' ? (req as { agent?: unknown }).agent : undefined
-    if (agent && !isRootAgent(agent)) return next() // subagent approvals are auto-rejected
-    const text = resolveApprovalText(req)
-    notify('需要您的审批', text || 'Agent 请求一项操作审批')
+    if (agent && !isRootAgent(agent)) return // subagent approvals are auto-rejected
+    const text = resolveApprovalText(req) || 'Agent 请求一项操作审批'
+    const r = req as { toolName?: string, callId?: string, tool?: { name?: string } | string } | undefined
+    const toolObj = r?.tool
+    const toolName = r?.toolName || (toolObj && typeof toolObj === 'object' ? toolObj.name : undefined) || (typeof toolObj === 'string' ? toolObj : undefined)
+    const callId = typeof r?.callId === 'string' ? r.callId : undefined
+    const session = agent && typeof agent === 'object' ? (agent as { session?: unknown }).session : undefined
+
+    // No session log to consult: toast immediately rather than stay silent.
+    const anchor = session === undefined ? undefined : locateApprovalAsked(session, toolName, callId)
+    if (session === undefined || anchor === undefined) {
+      notify('需要您的审批', text)
+      return
+    }
+
+    const timer = setTimeout(() => {
+      pendingTimers.delete(timer)
+      try {
+        if (isApprovalDecidedAfter(session, anchor)) return // gate answered it; no human needed
+        notify('需要您的审批', text)
+      } catch (error) {
+        console.warn('[dsh-win-notify] deferred approval toast failed:', String(error))
+      }
+    }, PENDING_GRACE_MS)
+    if (typeof timer === 'object' && timer !== null && typeof (timer as { unref?: () => void }).unref === 'function') {
+      (timer as { unref: () => void }).unref()
+    }
+    pendingTimers.add(timer)
+  }
+
+  ctx.on('approval/request', (req: unknown, next: () => void) => {
+    try {
+      scheduleApprovalToast(req)
+    } catch (error) {
+      console.warn('[dsh-win-notify] approval/request observer failed:', String(error))
+    }
     return next()
-  })
+  }, { prepend: true })
 }

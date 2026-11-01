@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { PENDING_GRACE_MS } from '../src/core'
 import { apply, inject, name } from '../src/index'
 
 // The helper EXE ships inside lib/.dsh-notify (built output), so it is not
@@ -25,6 +26,7 @@ vi.mock('node:fs', async (importOriginal) => {
 interface Listener {
   event: string
   cb: (...args: any[]) => unknown
+  options?: { prepend?: boolean }
 }
 
 interface SpawnCall {
@@ -38,13 +40,31 @@ function makeRootAgent(sessionId = 'root-1', header: Record<string, unknown> = {
   return { id: sessionId, session: { header, _sessionId: sessionId } as any }
 }
 
+/**
+ * Root agent whose session log holds the given events, so the approval
+ * grace-window helpers have real evidence to scan. Event i sits at seq i.
+ */
+function makeLoggedAgent(
+  sessionId: string,
+  events: { type: string, data?: Record<string, unknown> }[],
+  header: Record<string, unknown> = {},
+) {
+  const log = events.map((e) => ({ type: e.type, data: e.data }))
+  const session = {
+    header,
+    get seq() { return log.length },
+    eventAt: (seq: number) => log[seq],
+  }
+  return { id: sessionId, session: session as any }
+}
+
 function makeCtx() {
   const listeners: Listener[] = []
   const spawns: SpawnCall[] = []
   const ctx = {
     get: vi.fn((svc: string): any => (svc === 'sessionTitle' ? new Map() : undefined)),
-    on: vi.fn((event: string, cb: (...args: any[]) => unknown) => {
-      listeners.push({ event, cb })
+    on: vi.fn((event: string, cb: (...args: any[]) => unknown, options?: { prepend?: boolean }) => {
+      listeners.push({ event, cb, options })
     }),
     subprocess: {
       spawn: vi.fn((opts: { argv: string[]; cwd: string }) => {
@@ -87,11 +107,24 @@ describe.skipIf(!isWin)('apply() wiring (Windows)', () => {
     return spawns.filter((s) => s.argv[0].toLowerCase().endsWith('dshtoast.exe'))
   }
 
+  function listenerOptions(event: string) {
+    const rec = ctx.on.mock.calls.find(([e]) => e === event)
+    return rec ? rec[2] : undefined
+  }
+
   it('registers the three host event listeners', () => {
     const events = ctx.on.mock.calls.map(([e]) => e)
     expect(events).toContain('agent/status')
     expect(events).toContain('tools/execute')
     expect(events).toContain('approval/request')
+  })
+
+  it('registers the approval listener FIRST in the waterfall', () => {
+    // The desktop approval panel is a terminal answerer registered by an
+    // earlier bundle; a plain registration never runs on DSH 2.0.21+.
+    expect(listenerOptions('approval/request')).toEqual({ prepend: true })
+    expect(listenerOptions('agent/status')).toBeUndefined()
+    expect(listenerOptions('tools/execute')).toBeUndefined()
   })
 
   it('raises 任务完成 on root agent running -> idle', () => {
@@ -156,6 +189,63 @@ describe.skipIf(!isWin)('apply() wiring (Windows)', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0].argv[1]).toBe('需要您的审批')
     expect(calls[0].argv[2]).toContain('执行命令')
+  })
+
+  it('does not toast an approval the gate answered inside the grace window', () => {
+    vi.useFakeTimers()
+    try {
+      const agent = makeLoggedAgent('g1', [
+        { type: 'approval/asked', data: { id: 'ap-1', toolName: 'ops_bash', callId: 'c1' } },
+        { type: 'approval/decided', data: { id: 'ap-1', outcome: 'allowed-once' } },
+      ])
+      let nextCalled = 0
+      fire(ctx, 'approval/request', { toolName: 'ops_bash', callId: 'c1', reason: '执行命令', agent }, () => { nextCalled += 1 })
+      expect(nextCalled).toBe(1) // never blocks the real answerer
+      expect(helperSpawns()).toHaveLength(0) // deferred, not immediate
+      vi.advanceTimersByTime(PENDING_GRACE_MS + 50)
+      expect(helperSpawns()).toHaveLength(0) // answered: no human needed
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('toasts a genuinely pending approval after the grace window', () => {
+    vi.useFakeTimers()
+    try {
+      const agent = makeLoggedAgent('p1', [
+        { type: 'approval/asked', data: { id: 'ap-2', toolName: 'write', callId: 'c2' } },
+      ])
+      let nextCalled = 0
+      fire(ctx, 'approval/request', {
+        toolName: 'write',
+        callId: 'c2',
+        reason: 'escalate sandbox to danger-full-access: 目标含工作区外路径 1 处',
+        agent,
+      }, () => { nextCalled += 1 })
+      expect(nextCalled).toBe(1)
+      expect(helperSpawns()).toHaveLength(0)
+      vi.advanceTimersByTime(PENDING_GRACE_MS + 50)
+      const calls = helperSpawns()
+      expect(calls).toHaveLength(1)
+      expect(calls[0].argv[1]).toBe('需要您的审批')
+      expect(calls[0].argv[2]).toContain('沙箱提权到 danger-full-access')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('never defers a subagent approval into a toast', () => {
+    vi.useFakeTimers()
+    try {
+      const agent = makeLoggedAgent('s1', [
+        { type: 'approval/asked', data: { id: 'ap-3', toolName: 'pwsh' } },
+      ], { origin: 'subagent' })
+      fire(ctx, 'approval/request', { toolName: 'pwsh', reason: '执行命令', agent }, () => {})
+      vi.advanceTimersByTime(PENDING_GRACE_MS + 50)
+      expect(helperSpawns()).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('uses the session title in the completion body when available', () => {

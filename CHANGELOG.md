@@ -2,6 +2,34 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.1.3] - 2026-11-01
+
+### Fixed
+
+- **Approval toasts stopped firing on DSH 2.0.21+.** DSH now composes ONE
+  terminal answerer for `approval/request`: the desktop approval panel
+  (`@deepseek-ai/dsh-client-ui-approval`), reached through the `api-remotes`
+  waterfall. It RETURNS an outcome, which ends the chain, so a listener
+  registered afterwards — this plugin is the last bundle — never runs. The
+  listener is now registered with `{ prepend: true }`, which puts it in front of
+  that answerer, and it still always `return next()` so the real answerer keeps
+  working. Symptom before the fix: `需要您的审批` toasts silently disappeared
+  while 任务完成 / 需要您的输入 kept firing.
+
+### Added
+
+- **Pending grace window.** Registering first also exposes the requests an
+  auto-approver (`dsh-approval-gate` and friends) answers in milliseconds, which
+  must not toast. The toast is deferred by `PENDING_GRACE_MS` (1 s) and dropped
+  when the session log shows the matching `approval/decided` — a request still
+  pending after the window is one a human actually has to answer.
+- Pure helpers `locateApprovalAsked(session, toolName?, callId?)` (finds the
+  `approval/asked` event, preferring the exact `callId` and falling back to the
+  newest request of the same tool) and `isApprovalDecidedAfter(session, anchor)`
+  (correlates the later `approval/decided` by id). Both read the session log
+  through a tolerant duck-typed face (`eventAt`/`seq`, or `snapshotEvents`) and
+  return undefined/false instead of throwing on an unavailable surface.
+
 ## [0.1.2] - 2026-09-21
 
 ### Changed

@@ -88,7 +88,7 @@ npm run check
 
 - `npm run typecheck`：`tsc --noEmit` 类型检查 `src/`
 - `npm run build`：esbuild 产出 `lib/`，并把 `.dsh-notify/` 助手资产复制进 `lib/.dsh-notify/`
-- `npm test`：vitest 覆盖截断/平台判定/根代理过滤/摘要解析，以及 apply() 的事件接线（任务完成、输入、审批、冷却、子代理不打扰、平台守卫）
+- `npm test`：vitest 覆盖截断/平台判定/根代理过滤/摘要解析/审批原因中文化/审批前置注册与宽限窗口去抖，以及 apply() 的事件接线（任务完成、输入、审批、冷却、子代理不打扰、平台守卫）
 - `npm run test:smoke`：不依赖浏览器/Windows API，加载构建产物 `lib/index.js`，断言导出 `{ name, inject, apply }`、三个事件监听注册、助手资产（EXE/CS/ICO/PNG）齐备
 
 ## 实现说明 Implementation
@@ -97,6 +97,8 @@ npm run check
   - `agent/status`：running → idle 视为任务完成（仅用户可见根代理；见下「噪音控制」）
   - `tools/execute`：`ask_user_question` 弹提问的当刻发「需要您的输入」（挂 `tools/result` 会迟到——那是用户回答之后）
   - `approval/request`：待审批时发「需要您的审批」；说明由 `describeApprovalReason()`（`src/core.ts`）生成中文：识别宿主模板 `escalate sandbox to <mode>: <justification>` → 写出目标模式与后果 + 模型原文附注；已是中文的原因只本地化前缀
+    - **必须以 `{ prepend: true }` 注册**：DSH 2.0.21+ 只编排一个「终结应答者」（桌面审批面板 `@deepseek-ai/dsh-client-ui-approval`，经 `api-remotes` 瀑布下发），它 return 结果就结束瀑布，排在它后面的监听器永远不执行（本插件是最后一个 bundle，因此审批 toast 曾整体消失）。前置注册后仍然**必须** `return next()`，否则真实应答者收不到请求
+    - **1 秒宽限窗口**：前置注册也会看见自动审批器（`dsh-approval-gate` 等）毫秒级答掉的请求，那些不该弹。因此 toast 延后 `PENDING_GRACE_MS`（1s），到点若会话日志里已出现同 id 的 `approval/decided` 就不弹——仍在等待的才是真人要处理的
 - 与 `dsh-approval-gate` 的关系：两者都可能在 `approval/request` 瀑布里改写给人看的说明。本插件只读 `req.reason`，因此无论谁先执行都安全——approval-gate 已改写成中文时，本插件不再二次包装（CJK 检测）
 - 噪音控制：`origin === 'subagent'`（含 `delegationDepth > 0`）的会话一律跳过；逐代理 `WeakMap` 状态机；10 秒完成冷却
 - toast 图标链路：AUMID（`DeepSeekHarness.Notify`）→ 开始菜单快捷方式（`IPersistFile.Save` 必须在 `IPropertyStore.Commit` **之后**再执行一次才会把 AUMID 落盘）→ 注册表 `IconUri` → 多帧 `notify.ico`

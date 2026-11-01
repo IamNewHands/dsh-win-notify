@@ -10,6 +10,23 @@
 export const FINISH_COOLDOWN_MS = 10_000
 
 /**
+ * How long an approval request must stay unanswered before it is worth a toast
+ * (ms).
+ *
+ * DSH 2.0.21+ composes one *terminal* answerer for `approval/request`: the
+ * desktop approval panel (`@deepseek-ai/dsh-client-ui-approval`) is reached
+ * through the api-remotes waterfall and RETURNS an outcome, which ends the
+ * chain — so any listener registered after it (this plugin, bundle index last)
+ * never sees the request. The fix is to register with `{ prepend: true }` and
+ * answer nothing, which puts this plugin in front of the panel. That alone
+ * would toast every request, including the ones an auto-approver answers in
+ * milliseconds. So the toast is deferred by this window: a gate or policy that
+ * resolves the request inside it produces no toast, while a request still
+ * pending after it is one a human actually has to answer.
+ */
+export const PENDING_GRACE_MS = 1_000
+
+/**
  * True only on Windows. The WinRT Toast helper (`.dsh-notify/DshToast.exe`)
  * is a Windows-only binary; declaring `"os": ["win32"]` in package.json is the
  * install-time gate and this guard is the runtime gate (apply() no-ops).
@@ -78,7 +95,12 @@ export interface SubprocessService {
  */
 export interface NotifyContext {
   get<T = unknown>(name: string): T
-  on(event: string, listener: (...args: any[]) => unknown): unknown
+  /**
+   * Cordis listener registration. `{ prepend: true }` unshifts the listener to
+   * the FRONT of the waterfall — required for `approval/request`, see
+   * {@link PENDING_GRACE_MS}.
+   */
+  on(event: string, listener: (...args: any[]) => unknown, options?: { prepend?: boolean }): unknown
   subprocess: SubprocessService
 }
 
@@ -206,4 +228,128 @@ export function resolveApprovalText(req: unknown): string | undefined {
   } catch {
     return undefined
   }
+}
+
+/** How far back the approval scan looks for the `approval/asked` event. */
+const APPROVAL_SCAN_LIMIT = 200
+
+/**
+ * The slice of a DSH session log the approval helpers read. Both accessors are
+ * duck-typed because the session surface differs between DSH releases: newer
+ * builds expose `eventAt(seq)` plus `seq`, older ones only `snapshotEvents()`.
+ * `eventAt`/`snapshotEvents` are marked deprecated upstream, hence the tolerant
+ * shape and the `undefined` returns instead of throws.
+ */
+export interface SessionLogLike {
+  readonly seq?: number
+  eventAt?(seq: number): { type?: string, data?: unknown } | undefined
+  snapshotEvents?(fromSeq?: number, toSeqExclusive?: number): readonly { type?: string, data?: unknown }[]
+}
+
+/** Where a pending approval sits in the session log. */
+export interface ApprovalAnchor {
+  /** The `approval/asked` id, when the host recorded one. */
+  id?: string
+  /** Sequence number of that `approval/asked` event. */
+  seq: number
+}
+
+/** Log length of a session, or -1 when the surface does not expose it. */
+function sessionLength(session: SessionLogLike): number {
+  try {
+    const seq = session.seq
+    return typeof seq === 'number' && seq >= 0 ? seq : -1
+  } catch {
+    return -1
+  }
+}
+
+/** Events in `[fromSeq, toSeqExclusive)`; empty when the surface is missing. */
+function readEvents(
+  session: SessionLogLike,
+  fromSeq: number,
+  toSeqExclusive: number,
+): readonly { type?: string, data?: unknown }[] {
+  const length = sessionLength(session)
+  const end = toSeqExclusive === Infinity ? length : toSeqExclusive
+  if (end < 0) return []
+  try {
+    if (typeof session.eventAt === 'function') {
+      const out: { type?: string, data?: unknown }[] = []
+      for (let seq = fromSeq; seq < end; seq++) {
+        const event = session.eventAt(seq)
+        if (event !== undefined) out.push(event)
+      }
+      return out
+    }
+    if (typeof session.snapshotEvents === 'function') {
+      const events = session.snapshotEvents(fromSeq, end)
+      return Array.isArray(events) ? events : []
+    }
+  } catch {
+    // Deprecated accessors may throw on a closed or compacted log.
+  }
+  return []
+}
+
+/**
+ * Find the `approval/asked` event backing a pending `approval/request`, so a
+ * later `approval/decided` can be correlated with it.
+ *
+ * Matching prefers the exact `callId` (the join key dsh-im and the session
+ * projections both use) and falls back to the newest `approval/asked` of the
+ * same tool name, because the request payload does not always carry a callId.
+ *
+ * @returns the anchor, or undefined when the session log has no evidence.
+ */
+export function locateApprovalAsked(
+  session: unknown,
+  toolName?: string,
+  callId?: string,
+): ApprovalAnchor | undefined {
+  if (!session || typeof session !== 'object') return undefined
+  const log = session as SessionLogLike
+  const length = sessionLength(log)
+  if (length < 0) return undefined
+  const from = Math.max(0, length - APPROVAL_SCAN_LIMIT)
+  let byTool: ApprovalAnchor | undefined
+  for (let seq = length - 1; seq >= from; seq--) {
+    let event: { type?: string, data?: unknown } | undefined
+    try {
+      event = typeof log.eventAt === 'function'
+        ? log.eventAt(seq)
+        : readEvents(log, seq, seq + 1)[0]
+    } catch {
+      return undefined
+    }
+    if (!event || event.type !== 'approval/asked') continue
+    const data = event.data as { id?: string, callId?: string, toolName?: string } | undefined
+    const id = typeof data?.id === 'string' ? data.id : undefined
+    const anchor: ApprovalAnchor = { id, seq }
+    if (callId !== undefined && typeof data?.callId === 'string' && data.callId === callId) return anchor
+    if (byTool === undefined && toolName !== undefined && typeof data?.toolName === 'string' && data.toolName === toolName) {
+      byTool = anchor
+    }
+  }
+  return byTool
+}
+
+/**
+ * True when the host already answered the approval this anchor points at.
+ *
+ * `approval/decided` is appended by the approval service AFTER the
+ * `approval/request` waterfall settles, so an event with the same id (or any
+ * decided event when the id is unknown) means the request is no longer pending
+ * and the deferred toast must be dropped.
+ */
+export function isApprovalDecidedAfter(session: unknown, anchor: ApprovalAnchor): boolean {
+  if (!session || typeof session !== 'object') return false
+  const log = session as SessionLogLike
+  const events = readEvents(log, anchor.seq + 1, Infinity)
+  for (const event of events) {
+    if (!event || event.type !== 'approval/decided') continue
+    const data = event.data as { id?: string } | undefined
+    if (anchor.id === undefined || (typeof data?.id === 'string' && data.id === anchor.id)) return true
+  }
+  return false
 }

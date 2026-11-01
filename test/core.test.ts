@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   FINISH_COOLDOWN_MS,
+  PENDING_GRACE_MS,
   describeApprovalReason,
+  isApprovalDecidedAfter,
   isRootAgent,
   isSupportedPlatform,
+  locateApprovalAsked,
   resolveApprovalText,
   resolveQuestionText,
   resolveSessionTitle,
@@ -203,5 +206,69 @@ describe('describeApprovalReason', () => {
 describe('constants', () => {
   it('exposes the completion cooldown', () => {
     expect(FINISH_COOLDOWN_MS).toBe(10_000)
+  })
+
+  it('exposes the approval grace window', () => {
+    expect(PENDING_GRACE_MS).toBe(1_000)
+  })
+})
+
+/** Session log mock: event i sits at seq i, exposed via the `eventAt` face. */
+function makeLog(events: { type: string, data?: Record<string, unknown> }[]) {
+  return {
+    get seq() { return events.length },
+    eventAt: (seq: number) => events[seq],
+  }
+}
+
+describe('locateApprovalAsked', () => {
+  it('prefers the exact callId match', () => {
+    const session = makeLog([
+      { type: 'approval/asked', data: { id: 'a1', toolName: 'write', callId: 'c1' } },
+      { type: 'approval/asked', data: { id: 'a2', toolName: 'write', callId: 'c2' } },
+    ])
+    expect(locateApprovalAsked(session, 'write', 'c2')).toEqual({ id: 'a2', seq: 1 })
+  })
+
+  it('falls back to the newest approval of the same tool', () => {
+    const session = makeLog([
+      { type: 'approval/asked', data: { id: 'a1', toolName: 'pwsh' } },
+      { type: 'approval/asked', data: { id: 'a2', toolName: 'write' } },
+    ])
+    expect(locateApprovalAsked(session, 'pwsh')).toEqual({ id: 'a1', seq: 0 })
+  })
+
+  it('returns undefined without evidence', () => {
+    expect(locateApprovalAsked(undefined, 'write')).toBeUndefined()
+    expect(locateApprovalAsked({}, 'write')).toBeUndefined()
+    expect(locateApprovalAsked(makeLog([]), 'write')).toBeUndefined()
+    expect(locateApprovalAsked(makeLog([{ type: 'turn/start' }]), 'write')).toBeUndefined()
+  })
+})
+
+describe('isApprovalDecidedAfter', () => {
+  it('is true when the same approval id was decided', () => {
+    const session = makeLog([
+      { type: 'approval/asked', data: { id: 'a1' } },
+      { type: 'approval/decided', data: { id: 'a1', outcome: 'allowed-once' } },
+    ])
+    expect(isApprovalDecidedAfter(session, { id: 'a1', seq: 0 })).toBe(true)
+  })
+
+  it('is false for a decision on a different approval', () => {
+    const session = makeLog([
+      { type: 'approval/asked', data: { id: 'a1' } },
+      { type: 'approval/decided', data: { id: 'a2', outcome: 'allowed-once' } },
+    ])
+    expect(isApprovalDecidedAfter(session, { id: 'a1', seq: 0 })).toBe(false)
+  })
+
+  it('is false while the approval is still pending', () => {
+    const session = makeLog([{ type: 'approval/asked', data: { id: 'a1' } }])
+    expect(isApprovalDecidedAfter(session, { id: 'a1', seq: 0 })).toBe(false)
+  })
+
+  it('is false without a session log', () => {
+    expect(isApprovalDecidedAfter(undefined, { seq: 0 })).toBe(false)
   })
 })
